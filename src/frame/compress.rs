@@ -20,6 +20,19 @@ use super::{
 };
 use crate::block::WINDOW_SIZE;
 
+#[inline(always)]
+fn some_biased_unwrap<T>(probably_t: Option<T>) -> T {
+    match probably_t {
+        Some(t) => t,
+        None => cold_panic(),
+    }
+}
+
+#[cold]
+fn cold_panic() -> ! {
+    panic!();
+}
+
 /// A writer for compressing a LZ4 stream.
 ///
 /// This `FrameEncoder` wraps any other writer that implements `io::Write`.
@@ -173,7 +186,7 @@ impl<W: io::Write> FrameEncoder<W> {
     /// Note that mutating the output/input state of the stream may corrupt
     /// this encoder, so care must be taken when using this method.
     pub fn get_mut(&mut self) -> &mut W {
-        self.w.as_mut().unwrap()
+        some_biased_unwrap(self.w.as_mut())
     }
 
     /// Closes the frame by writing the end marker.
@@ -189,15 +202,14 @@ impl<W: io::Write> FrameEncoder<W> {
             }
         }
 
+        let w = some_biased_unwrap(self.w.as_mut());
+
         let mut block_info_buffer = [0u8; BLOCK_INFO_SIZE];
         BlockInfo::EndMark.write(&mut block_info_buffer[..])?;
-        self.w.as_mut().unwrap().write_all(&block_info_buffer[..])?;
+        w.write_all(&block_info_buffer[..])?;
         if self.frame_info.content_checksum {
             let content_checksum = self.content_hasher.finish() as u32;
-            self.w
-                .as_mut()
-                .unwrap()
-                .write_all(&content_checksum.to_le_bytes())?;
+            w.write_all(&content_checksum.to_le_bytes())?;
         }
 
         Ok(())
@@ -213,10 +225,7 @@ impl<W: io::Write> FrameEncoder<W> {
         self.init();
         let mut frame_info_buffer = [0u8; MAX_FRAME_INFO_SIZE];
         let size = self.frame_info.write(&mut frame_info_buffer)?;
-        self.w
-            .as_mut()
-            .unwrap()
-            .write_all(&frame_info_buffer[..size])?;
+        some_biased_unwrap(self.w.as_mut()).write_all(&frame_info_buffer[..size])?;
 
         if self.content_len != 0 {
             // This is the second or later frame for this Encoder,
@@ -285,16 +294,14 @@ impl<W: io::Write> FrameEncoder<W> {
         // Write the (un)compressed block to the writer and the block checksum (if applicable).
         let mut block_info_buffer = [0u8; BLOCK_INFO_SIZE];
         block_info.write(&mut block_info_buffer[..])?;
-        self.w.as_mut().unwrap().write_all(&block_info_buffer[..])?;
-        self.w.as_mut().unwrap().write_all(block_data)?;
+        let w = some_biased_unwrap(self.w.as_mut());
+        w.write_all(&block_info_buffer[..])?;
+        w.write_all(block_data)?;
         if self.frame_info.block_checksums {
             let mut block_hasher = XxHash32::with_seed(0);
             block_hasher.write(block_data);
             let block_checksum = block_hasher.finish() as u32;
-            self.w
-                .as_mut()
-                .unwrap()
-                .write_all(&block_checksum.to_le_bytes())?;
+            w.write_all(&block_checksum.to_le_bytes())?;
         }
 
         // Content checksum, if applicable

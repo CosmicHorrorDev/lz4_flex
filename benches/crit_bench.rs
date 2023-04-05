@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 extern crate criterion;
 
-use std::io::{Read, Write};
+use std::{
+    hint::black_box,
+    io::{Read, Write},
+};
 
 use self::criterion::*;
 use lz_fear::raw::compress2;
@@ -314,7 +317,8 @@ fn bench_frame_compression_throughput(c: &mut Criterion) {
                 b.iter(|| {
                     let mut frame_info = lz4_flex::frame::FrameInfo::new();
                     frame_info.block_mode = lz4_flex::frame::BlockMode::Independent;
-                    lz4_flex_frame_compress_with(frame_info, i)
+                    let res = lz4_flex_frame_compress_with(frame_info, black_box(i));
+                    black_box(res)
                 })
             },
         );
@@ -325,7 +329,8 @@ fn bench_frame_compression_throughput(c: &mut Criterion) {
                 b.iter(|| {
                     let mut frame_info = lz4_flex::frame::FrameInfo::new();
                     frame_info.block_mode = lz4_flex::frame::BlockMode::Linked;
-                    lz4_flex_frame_compress_with(frame_info, i)
+                    let res = lz4_flex_frame_compress_with(frame_info, black_box(i));
+                    black_box(res)
                 })
             },
         );
