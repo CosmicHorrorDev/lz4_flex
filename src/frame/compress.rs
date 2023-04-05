@@ -72,7 +72,7 @@ pub struct FrameEncoder<W: io::Write> {
     /// Encoder table
     compression_table: HashTable4K,
     /// The underlying writer.
-    w: W,
+    w: Option<W>,
     /// Xxhash32 used when content checksum is enabled.
     content_hasher: XxHash32,
     /// Number of bytes compressed
@@ -111,22 +111,11 @@ impl<W: io::Write> FrameEncoder<W> {
         );
     }
 
-    /// Returns a wrapper around `self` that will finish the stream on drop.
-    ///
-    /// # Panic
-    ///
-    /// Panics on drop if an error happens when finishing the stream.
-    pub fn auto_finish(self) -> AutoFinishEncoder<W> {
-        AutoFinishEncoder {
-            encoder: Some(self),
-        }
-    }
-
     /// Creates a new Encoder with the specified FrameInfo.
     pub fn with_frame_info(frame_info: FrameInfo, wtr: W) -> Self {
         FrameEncoder {
             src: Vec::new(),
-            w: wtr,
+            w: Some(wtr),
             // 16 KB hash table for matches, same as the reference implementation.
             compression_table: HashTable4K::new(),
             content_hasher: XxHash32::with_seed(0),
@@ -155,7 +144,7 @@ impl<W: io::Write> FrameEncoder<W> {
     /// Consumes this encoder, flushing internal buffer and writing stream terminator.
     pub fn finish(mut self) -> Result<W, Error> {
         self.try_finish()?;
-        Ok(self.w)
+        Ok(self.w.take().unwrap())
     }
 
     /// Attempt to finish this output stream, flushing internal buffer and writing stream
@@ -170,13 +159,13 @@ impl<W: io::Write> FrameEncoder<W> {
 
     /// Returns the underlying writer _without_ flushing the stream.
     /// This may leave the output in an unfinished state.
-    pub fn into_inner(self) -> W {
-        self.w
+    pub fn into_inner(mut self) -> W {
+        self.w.take().unwrap()
     }
 
     /// Gets a reference to the underlying writer in this encoder.
     pub fn get_ref(&self) -> &W {
-        &self.w
+        self.w.as_ref().unwrap()
     }
 
     /// Gets a reference to the underlying writer in this encoder.
@@ -184,7 +173,7 @@ impl<W: io::Write> FrameEncoder<W> {
     /// Note that mutating the output/input state of the stream may corrupt
     /// this encoder, so care must be taken when using this method.
     pub fn get_mut(&mut self) -> &mut W {
-        &mut self.w
+        self.w.as_mut().unwrap()
     }
 
     /// Closes the frame by writing the end marker.
@@ -202,10 +191,13 @@ impl<W: io::Write> FrameEncoder<W> {
 
         let mut block_info_buffer = [0u8; BLOCK_INFO_SIZE];
         BlockInfo::EndMark.write(&mut block_info_buffer[..])?;
-        self.w.write_all(&block_info_buffer[..])?;
+        self.w.as_mut().unwrap().write_all(&block_info_buffer[..])?;
         if self.frame_info.content_checksum {
             let content_checksum = self.content_hasher.finish() as u32;
-            self.w.write_all(&content_checksum.to_le_bytes())?;
+            self.w
+                .as_mut()
+                .unwrap()
+                .write_all(&content_checksum.to_le_bytes())?;
         }
 
         Ok(())
@@ -221,7 +213,10 @@ impl<W: io::Write> FrameEncoder<W> {
         self.init();
         let mut frame_info_buffer = [0u8; MAX_FRAME_INFO_SIZE];
         let size = self.frame_info.write(&mut frame_info_buffer)?;
-        self.w.write_all(&frame_info_buffer[..size])?;
+        self.w
+            .as_mut()
+            .unwrap()
+            .write_all(&frame_info_buffer[..size])?;
 
         if self.content_len != 0 {
             // This is the second or later frame for this Encoder,
@@ -290,13 +285,16 @@ impl<W: io::Write> FrameEncoder<W> {
         // Write the (un)compressed block to the writer and the block checksum (if applicable).
         let mut block_info_buffer = [0u8; BLOCK_INFO_SIZE];
         block_info.write(&mut block_info_buffer[..])?;
-        self.w.write_all(&block_info_buffer[..])?;
-        self.w.write_all(block_data)?;
+        self.w.as_mut().unwrap().write_all(&block_info_buffer[..])?;
+        self.w.as_mut().unwrap().write_all(block_data)?;
         if self.frame_info.block_checksums {
             let mut block_hasher = XxHash32::with_seed(0);
             block_hasher.write(block_data);
             let block_checksum = block_hasher.finish() as u32;
-            self.w.write_all(&block_checksum.to_le_bytes())?;
+            self.w
+                .as_mut()
+                .unwrap()
+                .write_all(&block_checksum.to_le_bytes())?;
         }
 
         // Content checksum, if applicable
@@ -387,34 +385,11 @@ impl<W: io::Write> io::Write for FrameEncoder<W> {
     }
 }
 
-/// A wrapper around an `FrameEncoder<W>` that finishes the stream on drop.
-///
-/// This can be created by the [`auto_finish()`] method on the [`FrameEncoder`].
-///
-/// [`auto_finish()`]: Encoder::auto_finish
-/// [`Encoder`]: Encoder
-pub struct AutoFinishEncoder<W: Write> {
-    // We wrap this in an option to take it during drop.
-    encoder: Option<FrameEncoder<W>>,
-}
-
-impl<W: io::Write> Drop for AutoFinishEncoder<W> {
+impl<W: io::Write> Drop for FrameEncoder<W> {
     fn drop(&mut self) {
-        if let Some(mut encoder) = self.encoder.take() {
-            if let Err(err) = encoder.try_finish() {
-                panic!("Error when flushing frame on drop {:?} ", err);
-            }
+        if self.w.is_some() {
+            let _ = self.try_finish();
         }
-    }
-}
-
-impl<W: Write> Write for AutoFinishEncoder<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.encoder.as_mut().unwrap().write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.encoder.as_mut().unwrap().flush()
     }
 }
 
